@@ -113,4 +113,4 @@ def test_prompt_lists_teams_and_waiting_students():
 
 def test_models_do_not_use_auto_router():
     assert len(ai_assign.MODELS) == 3
-    assert all(m.endswith(":free") and m != "openrouter/free" for m in ai_assign.MODELS)
+    assert all(m.endswith(":free") and not m.startswith("openrouter/") for m in ai_assign.MODELS)

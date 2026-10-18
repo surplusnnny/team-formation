@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import httpx
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
-# 오픈라우터 무료 텍스트 생성 모델. openrouter/free(자동 라우터)는 쓰지 않는다. Task 13에서 실제로 불러 보고 확정
+# 오픈라우터 무료 텍스트 생성 모델 3개를 직접 정해 차례로 부른다(무료 모델 자동 라우터는 쓰지 않음)
 MODELS = (
     "nvidia/nemotron-3-super-120b-a12b:free",
     "google/gemma-4-31b-it:free",
