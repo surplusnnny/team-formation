@@ -264,3 +264,44 @@ def load_state(pool) -> State:
         teams=sorted(teams.values(), key=lambda t: t.team_no),
         pending=pending,
     )
+
+
+# ---------- 지원과 투표 ----------
+
+def apply(pool, student_no: str, team_no: int) -> Outcome:
+    try:
+        with pool.connection() as conn, conn.transaction():
+            return _apply(conn, student_no, team_no)
+    except errors.IntegrityError:
+        return Outcome("막힘", "다른 요청이 먼저 처리됨. 화면을 보고 다시 시도")
+
+
+def _apply(conn, student_no: str, team_no: int) -> Outcome:
+    team = conn.execute("select id from tf_teams where team_no = %s for update", (team_no,)).fetchone()
+    if team is None:
+        return Outcome("막힘", f"팀{team_no}이(가) 없음")
+    if _is_closed(conn):
+        return Outcome("막힘", "모집이 마감됨")
+    me = _student(conn, no=student_no)
+    if me is None or me["is_admin"]:
+        return Outcome("막힘", "학생만 지원할 수 있음")
+    if conn.execute("select 1 from tf_members where student_id = %s", (me["id"],)).fetchone():
+        return Outcome("막힘", "이미 팀이 있음")
+    if conn.execute(
+        "select 1 from tf_applications where student_id = %s and status = '대기'", (me["id"],)
+    ).fetchone():
+        return Outcome("막힘", "결과를 기다리는 지원이 있음")
+    members = _members(conn, team["id"])
+    reason = rules.join_block_reason([s for _, s in members], _row_student(me))
+    if reason:
+        return Outcome("막힘", reason)
+    if not members:
+        _add_member(conn, team["id"], me["id"])
+        conn.execute(
+            """insert into tf_applications (team_id, student_id, status, reason, decided_at)
+               values (%s, %s, '승인', '빈 팀에 바로 들어감', now())""",
+            (team["id"], me["id"]),
+        )
+        return Outcome("승인", f"팀{team_no}에 들어감")
+    conn.execute("insert into tf_applications (team_id, student_id) values (%s, %s)", (team["id"], me["id"]))
+    return Outcome("대기", f"팀{team_no} 팀원 {len(members)}명의 투표를 기다림")
