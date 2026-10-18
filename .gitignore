@@ -1,0 +1,22 @@
+# 생성: 2026-10-18 16:50 KST
+# 비밀 값
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# 로컬 전용 클로드 설정
+.claude/*
+!.claude/commands/
+
+# 파이썬
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# 기타
+*.zip
+.DS_Store
+Thumbs.db
