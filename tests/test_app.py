@@ -2,6 +2,7 @@
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import service
 from conftest import load
 from db import get_secret
 
@@ -57,3 +58,57 @@ def test_student_sees_teams_and_no_admin_controls(pool):
     assert {"apply_1", "apply_2", "apply_3"} <= keys(at, "button")
     assert "admin_start" not in keys(at, "button")
     assert "학생1(PL;RW)" in texts(at)
+
+
+def test_student_apply_and_vote_buttons(pool):
+    load(pool, "easy.csv", 3)
+    at = new_app()
+    login(at, "2026104", "1234")
+    service.apply(pool, "2026101", 1)
+    at.button(key="apply_1").click()
+    at.run()
+    assert "대기: 팀1 팀원 1명의 투표를 기다림" in texts(at)
+    assert at.button(key="apply_2").disabled  # 결과를 기다리는 지원이 있으면 비활성
+
+    voter = new_app()
+    login(voter, "2026101", "1234")
+    assert "vote_yes_2026104" in keys(voter, "button")
+    voter.button(key="vote_yes_2026104").click()
+    voter.run()
+    assert "승인: 학생4(WP;FD)이(가) 팀1에 들어감" in texts(voter)
+    assert "vote_yes_2026104" not in keys(voter, "button")
+
+
+def test_my_vote_is_shown_instead_of_buttons(pool):
+    load(pool, "easy.csv", 3)
+    service.apply(pool, "2026101", 1)
+    service.apply(pool, "2026104", 1)
+    service.vote(pool, "2026101", "2026104", "찬성")
+    service.apply(pool, "2026107", 1)
+    service.vote(pool, "2026101", "2026107", "찬성")
+    at = new_app()
+    login(at, "2026101", "1234")
+    assert "내 투표: 찬성" in texts(at)
+    assert "vote_yes_2026107" not in keys(at, "button")
+    other = new_app()
+    login(other, "2026104", "1234")
+    assert {"vote_yes_2026107", "vote_no_2026107"} <= keys(other, "button")
+
+
+def test_admin_close_button(pool):
+    load(pool, "easy.csv", 3)
+    at = new_app()
+    login(at, "admin", get_secret("ADMIN_PASSWORD"))
+    at.button(key="admin_close").click()
+    at.run()
+    assert "승인: 모집을 마감함" in texts(at)
+
+
+def test_student_session_after_roster_reset(pool):
+    load(pool, "easy.csv", 3)
+    at = new_app()
+    login(at, "2026101", "1234")
+    load(pool, "medium.csv", 4)
+    at.run()
+    assert "지금 명단에 없는 학번임" in texts(at)
+    assert not at.exception
