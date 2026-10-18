@@ -204,7 +204,7 @@
 ### 6.5 관리자 화면
 - 명단 올리기: `admin_roster_file`, `admin_team_count`(1~10, 기본 3), `admin_start`
 - 마감과 배정: `admin_close`, `admin_assign`, `assign_status`(진행 중에는 `2차 모델(모델 이름)의 응답을 기다리는 중 · 37초 경과 / 120초`, 끝나면 결과, 배정안 표), `admin_confirm`
-- 현황(`st.fragment(run_every=5)`): `unassigned`(팀이 없는 학생의 이름), 팀 목록(key 없음), 마감 여부, 최근 AI 호출 기록(시각은 한국 시각)
+- 현황(`st.fragment(run_every=5)`): `unassigned`(팀이 없는 학생의 이름), 팀 목록(`team_N` key를 붙임. 관리자 화면에는 학생용 팀 목록이 없으므로 key가 겹치지 않음), 마감 여부, 최근 AI 호출 기록(시각은 한국 시각)
 - 학생 계정으로는 관리자 화면에 들어갈 수 없고, 관리자 동작 함수도 서버에서 관리자 여부를 다시 확인한다.
 
 ## 7. 데이터
