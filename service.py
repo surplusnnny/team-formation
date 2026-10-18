@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 import bcrypt
 from psycopg import errors
 
+import ai_assign
 import rules
+import solver
 from roster import RosterError, parse_roster
 from rules import Student
 
@@ -388,3 +390,90 @@ def close(pool, actor_no: str) -> Outcome:
                (select team_id from tf_members group by team_id having count(*) = 1) returning student_id"""
         ).fetchall()
     return Outcome("승인", f"모집을 마감함 (대기 지원 {len(rejected)}건 거절, 팀에서 빠진 학생 {len(removed)}명)")
+
+
+# ---------- 배정 ----------
+
+@dataclass
+class AssignPlan:
+    outcome: Outcome
+    pairs: list[tuple[str, int]] = field(default_factory=list)
+    source: str = ""
+    attempts: list = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+
+
+def plan_assignment(pool, actor_no: str, api_key: str | None, on_progress=None, runner=None) -> AssignPlan:
+    """배정안을 만든다(PRD 4.2절). 확정은 confirm()이 따로 한다."""
+    runner = runner or ai_assign.run
+    with pool.connection() as conn:
+        if not _is_admin(conn, actor_no):
+            return AssignPlan(NOT_ADMIN)
+    state = load_state(pool)
+    if not state.closed:
+        return AssignPlan(Outcome("막힘", "모집 마감 전에는 배정할 수 없음"))
+    teams, waiting = state.team_map(), state.unassigned()
+    if not waiting and not any(rules.team_problems(t, ms) for t, ms in teams.items()):
+        return AssignPlan(Outcome("막힘", "배정할 학생이 없음"))
+    fallback = solver.solve(teams, waiting)
+    if fallback is None:  # 규칙을 지키는 배정이 없으면 AI를 부르지 않는다(PRD 4.2절 3)
+        return AssignPlan(Outcome("막힘", "규칙을 지키는 배정이 없음"), reasons=solver.infeasible_reasons(teams, waiting))
+    attempts: list = []
+    if waiting and api_key:
+        pairs, attempts = runner(
+            teams,
+            waiting,
+            validate=lambda p: rules.validate_assignment(teams, waiting, p),
+            api_key=api_key,
+            on_progress=on_progress,
+            log=lambda attempt: log_ai(pool, attempt),
+        )
+        if pairs is not None:
+            win = attempts[-1]
+            source = f"{win.tier}차 모델 {win.model}"
+            return AssignPlan(Outcome("승인", f"배정안을 만듦 – {source}"), pairs, source, attempts)
+    source = "앱이 스스로 배정함" if api_key else "앱이 스스로 배정함 (OPENROUTER_API_KEY 없음)"
+    return AssignPlan(Outcome("승인", f"배정안을 만듦 – {source}"), fallback, source, attempts)
+
+
+def confirm(pool, actor_no: str, pairs) -> Outcome:
+    """배정안을 지금 DB 상태로 다시 검사한 뒤 저장한다(PRD 4.2절 9)."""
+    if not pairs:
+        return Outcome("막힘", "확정할 배정안이 없음")
+    try:
+        with pool.connection() as conn, conn.transaction():
+            if not _is_admin(conn, actor_no):
+                return NOT_ADMIN
+            _lock_teams(conn)
+            if not _is_closed(conn):
+                return Outcome("막힘", "모집 마감 전에는 확정할 수 없음")
+            team_ids = {r["team_no"]: r["id"] for r in conn.execute("select id, team_no from tf_teams").fetchall()}
+            teams = {no: [s for _, s in _members(conn, tid)] for no, tid in team_ids.items()}
+            placed = {s.student_no for ms in teams.values() for s in ms}
+            rows = conn.execute(STUDENTS_SQL).fetchall()
+            ids = {r["student_no"]: r["id"] for r in rows}
+            waiting = [_row_student(r) for r in rows if r["student_no"] not in placed]
+            problems = rules.validate_assignment(teams, waiting, pairs)
+            if problems:
+                return Outcome("막힘", "배정안이 지금 상태와 맞지 않음 – " + "; ".join(problems[:3]))
+            for student_no, team_no in pairs:
+                _add_member(conn, team_ids[team_no], ids[student_no])
+    except errors.IntegrityError:
+        return Outcome("막힘", "확정하는 중 충돌이 남. AI 배정을 다시 누름")
+    return Outcome("승인", f"배정안을 확정함 ({len(pairs)}명)")
+
+
+def log_ai(pool, attempt) -> None:
+    with pool.connection() as conn:
+        conn.execute(
+            "insert into tf_ai_logs (tier, model, outcome, elapsed_sec, detail) values (%s, %s, %s, %s, %s)",
+            (attempt.tier, attempt.model, attempt.outcome, attempt.elapsed, attempt.detail),
+        )
+
+
+def recent_ai_logs(pool, limit: int = 10) -> list[dict]:
+    with pool.connection() as conn:
+        return conn.execute(
+            "select tier, model, outcome, elapsed_sec, detail, created_at from tf_ai_logs order by id desc limit %s",
+            (limit,),
+        ).fetchall()

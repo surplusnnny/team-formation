@@ -6,6 +6,7 @@ from datetime import timedelta, timezone
 
 import streamlit as st
 
+import ai_assign
 import service
 from db import get_secret, make_pool
 
@@ -183,12 +184,57 @@ def admin_page(pool, user) -> None:
         if outcome.kind == "승인":
             st.session_state.pop("plan", None)
         st.rerun()
-    assign_col.button("AI 배정", key="admin_assign")
-    confirm_col.button("배정안 확정", key="admin_confirm")
-    st.container(key="assign_status", border=True).caption("AI 배정을 누르면 진행 상황과 배정안이 여기에 나옴")
+    assign_clicked = assign_col.button("AI 배정", key="admin_assign")
+    confirm_clicked = confirm_col.button("배정안 확정", key="admin_confirm")
+    status_box = st.container(key="assign_status", border=True)
+    if assign_clicked:
+        with status_box:
+            line = st.empty()
+        line.info("규칙을 지키는 배정이 있는지 확인하는 중")
+
+        def progress(tier, model, elapsed):
+            line.info(f"{tier}차 모델({model})의 응답을 기다리는 중 · {elapsed:.0f}초 경과 / {ai_assign.TIMEOUT_SEC:.0f}초")
+
+        plan = service.plan_assignment(pool, user.student_no, get_secret("OPENROUTER_API_KEY"), on_progress=progress)
+        st.session_state["plan"] = plan
+        set_result(plan.outcome.text)
+        st.rerun()
+    if confirm_clicked:
+        plan = st.session_state.get("plan")
+        outcome = service.confirm(pool, user.student_no, plan.pairs if plan else [])
+        set_result(outcome.text)
+        if outcome.kind == "승인":
+            st.session_state.pop("plan", None)
+        st.rerun()
+    with status_box:
+        render_plan(st.session_state.get("plan"), service.load_state(pool))
 
     st.subheader("3. 현황")
     admin_status(pool)
+
+
+def render_plan(plan, state) -> None:
+    if plan is None:
+        st.caption("AI 배정을 누르면 진행 상황과 배정안이 여기에 나옴")
+        return
+    if plan.reasons:  # PRD 4.2절 3: 규칙을 지키는 배정이 없음과 그 이유
+        st.error("규칙을 지키는 배정이 없음")
+        for reason in plan.reasons:
+            st.markdown(f"- {reason}")
+        return
+    if plan.outcome.kind != "승인":
+        st.warning(plan.outcome.text)
+        return
+    for a in plan.attempts:
+        detail = f" – {a.detail}" if a.detail else ""
+        st.markdown(f"- {a.tier}차 모델 `{a.model}`: {a.outcome} ({a.elapsed:.0f}초){detail}")
+    st.success(f"배정안 출처: {plan.source}")
+    rows = []
+    for student_no, team_no in plan.pairs:
+        s = state.students.get(student_no)
+        if s:
+            rows.append({"이름": s.name, "주 역할": s.main_role, "보조 역할": ", ".join(s.sub_roles) or "없음", "배정된 팀": f"팀{team_no}"})
+    st.table(rows)
 
 
 @st.fragment(run_every=REFRESH_SEC)
@@ -208,6 +254,20 @@ def admin_status(pool) -> None:
                     waiting = [p.applicant.name for p in state.pending if p.team_no == team.team_no]
                     if waiting:
                         st.caption("대기 중인 지원: " + ", ".join(waiting))
+    logs = service.recent_ai_logs(pool)
+    if logs:
+        st.markdown("**최근 AI 호출 기록**")
+        st.table([
+            {
+                "시각(KST)": r["created_at"].astimezone(KST).strftime("%m-%d %H:%M:%S"),
+                "차수": f"{r['tier']}차",
+                "모델": r["model"],
+                "결과": r["outcome"],
+                "경과(초)": float(r["elapsed_sec"]),
+                "사유": r["detail"] or "",
+            }
+            for r in logs
+        ])
 
 
 def main() -> None:

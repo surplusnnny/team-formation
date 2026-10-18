@@ -112,3 +112,29 @@ def test_student_session_after_roster_reset(pool):
     at.run()
     assert "지금 명단에 없는 학번임" in texts(at)
     assert not at.exception
+
+
+def test_admin_assign_and_confirm_without_ai(pool, monkeypatch):
+    monkeypatch.setattr(service.ai_assign, "MODELS", ())  # 시험에서는 AI를 부르지 않음 → 앱의 자체 배정
+    load(pool, "easy.csv", 3)
+    service.close(pool, "admin")  # 팀원이 없으므로 8명 모두 배정 대상
+    at = new_app()
+    login(at, "admin", get_secret("ADMIN_PASSWORD"))
+    at.button(key="admin_assign").click()
+    at.run()
+    assert "승인: 배정안을 만듦 – 앱이 스스로 배정함" in texts(at)
+    at.button(key="admin_confirm").click()
+    at.run()
+    assert "승인: 배정안을 확정함 (8명)" in texts(at)
+
+
+def test_admin_sees_no_valid_assignment(pool):
+    csv = "student_no,name,main_role,sub_roles\n9000001,가상1,기획자,\n9000002,가상2,테스터,\n"
+    service.start_roster(pool, "admin", csv.encode("utf-8"), 1)
+    service.close(pool, "admin")
+    at = new_app()
+    login(at, "admin", get_secret("ADMIN_PASSWORD"))
+    at.button(key="admin_assign").click()
+    at.run()
+    assert "규칙을 지키는 배정이 없음" in texts(at)
+    assert "팀1에 웹 프로그래머를 맡을 학생이 없음" in texts(at)

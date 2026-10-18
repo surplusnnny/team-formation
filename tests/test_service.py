@@ -163,3 +163,80 @@ def test_two_students_apply_to_empty_team_at_once(pool):
         t.join()
     assert sorted(results.values()) == ["대기", "승인"]
     assert len(service.load_state(pool).team_map()[1]) == 1
+
+
+def fake_runner(pairs_from_ai, outcome="성공"):
+    calls = []
+
+    def runner(teams, waiting, validate, api_key, on_progress=None, log=None):
+        calls.append(len(waiting))
+        attempt = service.ai_assign.Attempt(1, "가짜/모델:free", outcome, 0.1, "")
+        if log:
+            log(attempt)
+        return (pairs_from_ai, [attempt]) if outcome == "성공" else (None, [attempt])
+
+    runner.calls = calls
+    return runner
+
+
+def finish_easy(pool):
+    load(pool, "easy.csv", 3)
+    for no, team in (("2026101", 1), ("2026102", 2), ("2026103", 3), ("2026104", 1), ("2026105", 2), ("2026106", 3)):
+        service.apply(pool, no, team)
+    for voter, applicant in (("2026101", "2026104"), ("2026102", "2026105"), ("2026103", "2026106")):
+        service.vote(pool, voter, applicant, "찬성")
+
+
+def test_plan_requires_close_and_admin(pool):
+    finish_easy(pool)
+    assert service.plan_assignment(pool, "admin", "key").outcome.text == "막힘: 모집 마감 전에는 배정할 수 없음"
+    service.close(pool, "admin")
+    assert service.plan_assignment(pool, "2026101", "key").outcome.text == "막힘: 관리자만 할 수 있음"
+
+
+def test_plan_uses_ai_answer_then_confirm(pool):
+    finish_easy(pool)
+    service.close(pool, "admin")
+    runner = fake_runner([("2026107", 2), ("2026108", 1)])
+    plan = service.plan_assignment(pool, "admin", "key", runner=runner)
+    assert plan.outcome.kind == "승인" and plan.source.startswith("1차 모델")
+    assert service.recent_ai_logs(pool)[0]["model"] == "가짜/모델:free"
+    assert service.confirm(pool, "admin", plan.pairs).text == "승인: 배정안을 확정함 (2명)"
+    assert service.load_state(pool).unassigned() == []
+
+
+def test_plan_falls_back_to_solver_when_ai_fails(pool):
+    finish_easy(pool)
+    service.close(pool, "admin")
+    plan = service.plan_assignment(pool, "admin", "key", runner=fake_runner(None, outcome="시간 초과"))
+    assert plan.source == "앱이 스스로 배정함"
+    assert [a.outcome for a in plan.attempts] == ["시간 초과"]
+    assert service.confirm(pool, "admin", plan.pairs).kind == "승인"
+
+
+def test_no_valid_assignment_skips_ai(pool):
+    csv = "student_no,name,main_role,sub_roles\n9000001,가상1,기획자,\n9000002,가상2,테스터,\n9000003,가상3,발표자,\n9000004,가상4,보고서 작성자,\n"
+    assert service.start_roster(pool, "admin", csv.encode("utf-8-sig"), 2).kind == "승인"
+    service.close(pool, "admin")
+    runner = fake_runner([])
+    plan = service.plan_assignment(pool, "admin", "key", runner=runner)
+    assert plan.outcome.text == "막힘: 규칙을 지키는 배정이 없음"
+    assert runner.calls == []
+    assert any("웹 프로그래머를 맡을 학생이 없음" in r for r in plan.reasons)
+
+
+def test_confirm_rejects_stale_plan(pool):
+    finish_easy(pool)
+    service.close(pool, "admin")
+    plan = service.plan_assignment(pool, "admin", None)
+    load(pool, "easy.csv", 3)
+    assert service.confirm(pool, "admin", plan.pairs).text == "막힘: 모집 마감 전에는 확정할 수 없음"
+    assert service.confirm(pool, "admin", []).text == "막힘: 확정할 배정안이 없음"
+
+
+def test_nothing_to_assign(pool):
+    finish_easy(pool)
+    service.close(pool, "admin")
+    plan = service.plan_assignment(pool, "admin", None)
+    service.confirm(pool, "admin", plan.pairs)
+    assert service.plan_assignment(pool, "admin", None).outcome.text == "막힘: 배정할 학생이 없음"
