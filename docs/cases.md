@@ -7,4 +7,10 @@
 
 ## 6. 클로드가 잘못 추론하거나 답한 사례
 
+### 6-1. 화면 시험 파일의 경로를 잘못 적음 (2026-10-18, Task 6)
+- 무엇: 클로드가 구현 계획서(IMPL-PLAN.md Task 6)에 `AppTest.from_file("streamlit_app.py")`라고 적음. 클로드는 이 경로가 작업 폴더 기준이라고 여겼으나, Streamlit의 AppTest는 **시험 파일이 있는 폴더(tests/) 기준**으로 경로를 찾음
+- 결과: 앱을 만들기 전의 "실패하는 시험" 단계에서 시험이 실패했는데, 실패 이유가 "앱이 없음"이 아니라 "경로가 틀림"이었음. 앱을 만든 뒤에도 4개 시험이 모두 `AppTest script not found at ...	ests\streamlit_app.py`로 실패
+- 알아챈 방법: 앱을 만든 뒤에도 같은 오류가 나서 오류 메시지의 경로(`tests\streamlit_app.py`)를 읽고 알아챔. `../streamlit_app.py`로 고친 뒤 앱 파일을 잠시 치워 시험이 올바른 이유로 실패하는지 다시 확인함
+- 근거: 커밋 fdafb3b (tests/test_app.py), `.superpowers` 작업 기록의 Task 6 Ruling 줄
+
 ## 7. 앱의 문제점이나 개선 필요 사항
