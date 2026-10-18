@@ -83,8 +83,17 @@ def header(user) -> None:
     st.caption(f"화면은 {REFRESH_SEC}초마다 저절로 바뀜")
 
 
+def do_apply(pool, me_no: str, team_no: int) -> None:
+    set_result(service.apply(pool, me_no, team_no).text)
+
+
+def do_vote(pool, me_no: str, applicant_no: str, choice: str) -> None:
+    set_result(service.vote(pool, me_no, applicant_no, choice).text)
+
+
 @st.fragment(run_every=REFRESH_SEC)
 def student_body(pool, me_no: str) -> None:
+    """학생 화면. fragment라서 5초마다 이 부분만 다시 그린다(다른 사람의 변경 보기)."""
     state = service.load_state(pool)
     show_result()
     me = state.students.get(me_no)
@@ -92,7 +101,42 @@ def student_body(pool, me_no: str) -> None:
         st.warning("지금 명단에 없는 학번임. 로그아웃한 뒤 다시 로그인")
         return
     my_team = state.team_no_of(me_no)
-    st.markdown(f"**내 팀: 팀{my_team}**" if my_team else "**아직 팀이 없음**")
+    my_pending = state.pending_of(me_no)
+    if my_team:
+        st.markdown(f"**내 팀: 팀{my_team}**")
+    elif my_pending:
+        st.markdown(f"**팀{my_pending.team_no} 지원 결과를 기다리는 중**")
+    else:
+        st.markdown("**아직 팀이 없음**")
+    if state.closed:
+        st.info("모집이 마감됨. 지원과 투표를 할 수 없음")
+    locked = state.closed or my_team is not None or my_pending is not None  # PRD 6.4절: 비활성 조건
+    if my_team is not None:
+        incoming_section(pool, state, me_no, my_team)
+    teams_section(pool, state, me_no, my_team, locked)
+
+
+def incoming_section(pool, state, me_no: str, my_team: int) -> None:
+    st.subheader("내 팀에 들어온 지원")
+    incoming = [p for p in state.pending if p.team_no == my_team]
+    if not incoming:
+        st.caption("대기 중인 지원이 없음")
+        return
+    member_count = len(state.team_map()[my_team])
+    for p in incoming:
+        yes = sum(1 for v in p.votes.values() if v == "찬성")
+        info, yes_col, no_col = st.columns([4, 1, 1])
+        info.markdown(f"**{p.applicant.name}** · {roles_text(p.applicant)} · 찬성 {yes}/{member_count}명")
+        mine = p.votes.get(me_no)
+        if mine:
+            yes_col.markdown(f"내 투표: {mine}")
+            continue
+        no = p.applicant.student_no
+        yes_col.button("찬성", key=f"vote_yes_{no}", on_click=do_vote, args=(pool, me_no, no, "찬성"), disabled=state.closed)
+        no_col.button("거부", key=f"vote_no_{no}", on_click=do_vote, args=(pool, me_no, no, "거부"), disabled=state.closed)
+
+
+def teams_section(pool, state, me_no: str, my_team, locked: bool) -> None:
     st.subheader("팀 목록")
     if not state.teams:
         st.caption("아직 팀이 없음. 관리자가 명단을 올려야 함")
@@ -102,7 +146,16 @@ def student_body(pool, me_no: str) -> None:
         with cols[i % len(cols)]:
             with st.container(key=f"team_{team.team_no}", border=True):
                 team_card(team, my_team)
-                st.button(f"{team.name}에 지원", key=f"apply_{team.team_no}", disabled=True)
+                waiting = [p.applicant.name for p in state.pending if p.team_no == team.team_no]
+                if waiting:
+                    st.caption("대기 중인 지원: " + ", ".join(waiting))
+                st.button(
+                    f"{team.name}에 지원",
+                    key=f"apply_{team.team_no}",
+                    disabled=locked,
+                    on_click=do_apply,
+                    args=(pool, me_no, team.team_no),
+                )
 
 
 def admin_page(pool, user) -> None:
@@ -124,7 +177,12 @@ def admin_page(pool, user) -> None:
 
     st.subheader("2. 마감과 배정")
     close_col, assign_col, confirm_col = st.columns(3)
-    close_col.button("모집 마감", key="admin_close")
+    if close_col.button("모집 마감", key="admin_close"):
+        outcome = service.close(pool, user.student_no)
+        set_result(outcome.text)
+        if outcome.kind == "승인":
+            st.session_state.pop("plan", None)
+        st.rerun()
     assign_col.button("AI 배정", key="admin_assign")
     confirm_col.button("배정안 확정", key="admin_confirm")
     st.container(key="assign_status", border=True).caption("AI 배정을 누르면 진행 상황과 배정안이 여기에 나옴")
@@ -147,6 +205,9 @@ def admin_status(pool) -> None:
             with cols[i % len(cols)]:
                 with st.container(key=f"team_{team.team_no}", border=True):
                     team_card(team, None)
+                    waiting = [p.applicant.name for p in state.pending if p.team_no == team.team_no]
+                    if waiting:
+                        st.caption("대기 중인 지원: " + ", ".join(waiting))
 
 
 def main() -> None:
