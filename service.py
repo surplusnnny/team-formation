@@ -367,3 +367,24 @@ def _vote(conn, voter_no: str, applicant_no: str, choice: str) -> Outcome:
     _add_member(conn, team["id"], app["student_id"])
     _decide(conn, app["id"], "승인", "팀원 모두 찬성")
     return Outcome("승인", f"{applicant.name}이(가) 팀{team['team_no']}에 들어감")
+
+
+# ---------- 마감 ----------
+
+def close(pool, actor_no: str) -> Outcome:
+    with pool.connection() as conn, conn.transaction():
+        if not _is_admin(conn, actor_no):
+            return NOT_ADMIN
+        _lock_teams(conn)
+        if _is_closed(conn):
+            return Outcome("막힘", "이미 마감됨")
+        _set_setting(conn, "closed", "true")
+        rejected = conn.execute(
+            """update tf_applications set status = '거절', reason = '모집 마감', decided_at = now()
+               where status = '대기' returning id"""
+        ).fetchall()
+        removed = conn.execute(
+            """delete from tf_members where team_id in
+               (select team_id from tf_members group by team_id having count(*) = 1) returning student_id"""
+        ).fetchall()
+    return Outcome("승인", f"모집을 마감함 (대기 지원 {len(rejected)}건 거절, 팀에서 빠진 학생 {len(removed)}명)")

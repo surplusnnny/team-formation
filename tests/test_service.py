@@ -1,4 +1,6 @@
 # 생성: 2026-10-18 17:34 KST
+import threading
+
 import pytest
 
 import service
@@ -129,3 +131,35 @@ def test_member_who_joined_later_also_votes(pool):
     assert service.vote(pool, "2026308", "2026306", "찬성").text == "대기: 찬성 2/3명"
     out = service.vote(pool, "2026305", "2026306", "찬성")
     assert out.text == "거절: 승인 직전 검사 – 같은 주 역할의 팀원이 있음"
+
+
+def test_close_rejects_pending_and_removes_lonely_members(pool):
+    load(pool, "medium.csv", 4)
+    service.apply(pool, "2026203", 3)
+    service.apply(pool, "2026211", 4)
+    service.apply(pool, "2026212", 4)
+    assert service.close(pool, "2026201").text == "막힘: 관리자만 할 수 있음"
+    assert service.close(pool, "admin").text == "승인: 모집을 마감함 (대기 지원 1건 거절, 팀에서 빠진 학생 2명)"
+    state = service.load_state(pool)
+    assert state.closed and state.pending == []
+    assert {"학생3(PL;RW)", "학생11(RW)", "학생12(PT;RW;FD)"} <= {s.name for s in state.unassigned()}
+    assert service.close(pool, "admin").text == "막힘: 이미 마감됨"
+    assert service.apply(pool, "2026202", 3).text == "막힘: 모집이 마감됨"
+
+
+def test_two_students_apply_to_empty_team_at_once(pool):
+    load(pool, "easy.csv", 3)
+    barrier = threading.Barrier(2)
+    results = {}
+
+    def go(no):
+        barrier.wait()
+        results[no] = service.apply(pool, no, 1).kind
+
+    threads = [threading.Thread(target=go, args=(no,)) for no in ("2026101", "2026104")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results.values()) == ["대기", "승인"]
+    assert len(service.load_state(pool).team_map()[1]) == 1
